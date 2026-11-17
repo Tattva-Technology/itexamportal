@@ -38,3 +38,22 @@ npm-debug.log*
 # Local administrator provisioning scripts
 scripts/create-admin.js
 scripts/create-admin-secure.js
+.vercel
+.env*
+# Keep local authenticator secrets private
+new-authenticator-key.txt
+
+# Local diagnostic scripts
+check-admin.js
+check-db-host.js
+generate-auth-key.js
+update-admin-email.js
+update-admin-totp.js
+inspect-*.cjs
+verify-*.cjs
+
+# Never upload local ZIP archives
+*.zip
+
+# Allow the example environment file
+!.env.example

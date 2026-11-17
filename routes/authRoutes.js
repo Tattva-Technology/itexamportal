@@ -1,17 +1,13 @@
 ﻿const express = require("express");
 const bcrypt = require("bcryptjs");
-const db = require("../database/database");
+const pool = require("../database/postgres");
 
 const router = express.Router();
 
-function getIndiaYear() {
-  return new Intl.DateTimeFormat("en", {
-    timeZone: "Asia/Kolkata",
-    year: "numeric"
-  }).format(new Date());
-}
-
 router.post("/register", async (req, res, next) => {
+  let client;
+  let transactionStarted = false;
+
   try {
     const { name, email, password } = req.body;
 
@@ -40,66 +36,82 @@ router.post("/register", async (req, res, next) => {
       });
     }
 
-    const existing = db.prepare(
-      "SELECT id FROM users WHERE email = ?"
-    ).get(cleanEmail);
+    const passwordHash = await bcrypt.hash(password, 12);
 
-    if (existing) {
+    client = await pool.connect();
+    await client.query("BEGIN");
+    transactionStarted = true;
+
+    const existing = await client.query(
+      "SELECT id FROM users WHERE email = $1",
+      [cleanEmail]
+    );
+
+    if (existing.rowCount > 0) {
+      await client.query("ROLLBACK");
+      transactionStarted = false;
+
       return res.status(409).json({
         error: "An account with this email already exists."
       });
     }
 
-    const passwordHash = await bcrypt.hash(password, 12);
+    const sequenceResult = await client.query(
+      "SELECT next_value FROM candidate_sequence WHERE id = 1 FOR UPDATE"
+    );
 
-    const registerStudent = db.transaction(() => {
-      const sequence = db.prepare(
-        "SELECT next_value FROM candidate_sequence WHERE id = 1"
-      ).get();
+    if (
+      sequenceResult.rowCount === 0 ||
+      sequenceResult.rows[0].next_value > 2574
+    ) {
+      throw new Error(
+        "All candidate numbers for batch 2026-27 have been allocated."
+      );
+    }
 
-      if (!sequence || sequence.next_value > 2574) {
-        throw new Error("All candidate numbers for batch 2026-27 have been allocated.");
-      }
+    const number = sequenceResult.rows[0].next_value;
+    const letters = "MNOPQRSTUVWXYZABCDEFGHIJKL";
+    const letter = letters[Math.floor((number - 1) / 99)];
+    const serial = ((number - 1) % 99) + 1;
+    const candidateNo = `${letter}2027${String(serial).padStart(2, "0")}`;
 
-      const number = sequence.next_value;
-      const letters = "MNOPQRSTUVWXYZABCDEFGHIJKL";
-      const letter = letters[Math.floor((number - 1) / 99)];
-      const serial = ((number - 1) % 99) + 1;
-      const candidateNo = `${letter}2027${String(serial).padStart(2, "0")}`;
+    const inserted = await client.query(
+      `INSERT INTO users (name, email, password_hash, candidate_no)
+       VALUES ($1, $2, $3, $4)
+       RETURNING id`,
+      [cleanName, cleanEmail, passwordHash, candidateNo]
+    );
 
-      const result = db.prepare(`
-        INSERT INTO users (name, email, password_hash)
-        VALUES (?, ?, ?)
-      `).run(cleanName, cleanEmail, passwordHash);
+    const userId = inserted.rows[0].id;
 
-      const userId = Number(result.lastInsertRowid);
+    await client.query(
+      "UPDATE candidate_sequence SET next_value = $1 WHERE id = 1",
+      [number + 1]
+    );
 
-      db.prepare(
-        "UPDATE users SET candidate_no = ? WHERE id = ?"
-      ).run(candidateNo, userId);
-
-      db.prepare(
-        "UPDATE candidate_sequence SET next_value = ? WHERE id = 1"
-      ).run(number + 1);
-
-      return { userId, candidateNo };
-    });
-
-    const student = registerStudent();
+    await client.query("COMMIT");
+    transactionStarted = false;
 
     return res.status(201).json({
-      message: "TATTVA account created successfully.",
-      candidateNo: student.candidateNo,
-      userId: student.userId
+      message: "itexamportal account created successfully.",
+      candidateNo,
+      userId
     });
 
   } catch (error) {
-    if (error.code === "SQLITE_CONSTRAINT_UNIQUE") {
+    if (transactionStarted && client) {
+      await client.query("ROLLBACK").catch(() => {});
+    }
+
+    if (error.code === "23505") {
       return res.status(409).json({
         error: "This email or candidate number is already registered."
       });
     }
+
     next(error);
+  } finally {
+    if (client) client.release();
   }
 });
 
@@ -113,11 +125,14 @@ router.post("/login", async (req, res, next) => {
       });
     }
 
-    const user = db.prepare(`
-      SELECT id, name, email, password_hash, role, candidate_no
-      FROM users
-      WHERE email = ?
-    `).get(email.trim().toLowerCase());
+    const result = await pool.query(
+      `SELECT id, name, email, password_hash, role, candidate_no
+       FROM users
+       WHERE email = $1`,
+      [email.trim().toLowerCase()]
+    );
+
+    const user = result.rows[0];
 
     if (!user || !(await bcrypt.compare(password, user.password_hash))) {
       return res.status(401).json({
@@ -152,22 +167,30 @@ router.post("/login", async (req, res, next) => {
   }
 });
 
-router.get("/me", (req, res) => {
-  if (!req.session || !req.session.userId) {
-    return res.status(401).json({ error: "Please log in first." });
+router.get("/me", async (req, res, next) => {
+  try {
+    if (!req.session || !req.session.userId) {
+      return res.status(401).json({ error: "Please log in first." });
+    }
+
+    const result = await pool.query(
+      `SELECT id, name, email, role, candidate_no, created_at
+       FROM users
+       WHERE id = $1`,
+      [req.session.userId]
+    );
+
+    const user = result.rows[0];
+
+    if (!user) {
+      return res.status(401).json({ error: "Account not found." });
+    }
+
+    res.json({ user });
+
+  } catch (error) {
+    next(error);
   }
-
-  const user = db.prepare(`
-    SELECT id, name, email, role, candidate_no, created_at
-    FROM users
-    WHERE id = ?
-  `).get(req.session.userId);
-
-  if (!user) {
-    return res.status(401).json({ error: "Account not found." });
-  }
-
-  res.json({ user });
 });
 
 router.post("/logout", (req, res, next) => {
@@ -177,11 +200,11 @@ router.post("/logout", (req, res, next) => {
 
   req.session.destroy((error) => {
     if (error) return next(error);
-    res.clearCookie("tattva.sid");
+
+    res.clearCookie("itexamportal.sid");
     res.json({ message: "Logged out successfully." });
   });
 });
 
 module.exports = router;
-
 

@@ -1,0 +1,9 @@
+﻿{
+  "appId": "com.itexamportal.app",
+  "appName": "itexamportal",
+  "webDir": "dist",
+  "server": {
+    "url": "https://tattva-hsc-portal.vercel.app",
+    "cleartext": false
+  }
+}

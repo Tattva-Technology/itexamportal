@@ -1,0 +1,10 @@
+﻿.env
+.env.*
+!.env.example
+database/*.db
+database/*.sqlite
+database/*.sqlite3
+backup-*/
+backup-before-*/
+node_modules/
+.git/
