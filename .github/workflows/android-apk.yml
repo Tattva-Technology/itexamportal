@@ -1,4 +1,4 @@
-﻿name: Build itexamportal Android APK
+name: Build itexamportal Android APK
 
 on:
   workflow_dispatch:
@@ -29,8 +29,6 @@ jobs:
           distribution: temurin
           java-version: '21'
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
 
       - name: Verify Android SDK
         run: |
@@ -63,5 +61,6 @@ jobs:
           path: android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 7
+
 
 
